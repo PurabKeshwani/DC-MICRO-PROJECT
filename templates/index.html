@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Mutual Exclusion Simulator | {% if algorithm == 'lamport' %}Lamport's Algorithm{% else %}Ricart–Agrawala Algorithm{% endif %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header class="app-header">
+        <div class="brand">
+            <svg class="brand-mark" viewBox="0 0 36 36" aria-hidden="true"><path d="M8 10L28 10L18 28Z"/><circle cx="8" cy="10" r="4"/><circle cx="28" cy="10" r="4"/><circle cx="18" cy="28" r="4"/></svg>
+            <div><h1>Distributed Mutual Exclusion Simulator</h1><p><span id="algorithm-name">{{ algorithm_name }} Algorithm</span> <span class="separator" aria-hidden="true">/</span> Independent clocks. One shared resource.</p></div>
+        </div>
+        <span class="run-status" id="run-status">Connecting...</span>
+    </header>
+    <main>
+        <div class="error-banner" id="error-banner" role="alert" hidden></div>
+        <section class="toolbar" aria-label="Simulation controls">
+            <div class="settings">
+                <label>Algorithm<select id="config-algorithm" title="Changing algorithm starts a new paused run" onchange="App.updateConfig('algorithm', this.value)"><option value="lamport" {{ 'selected' if algorithm == 'lamport' else '' }}>Lamport</option><option value="ricart_agrawala" {{ 'selected' if algorithm == 'ricart_agrawala' else '' }}>Ricart–Agrawala</option></select></label>
+                <label>Processes<select id="config-processes" onchange="App.updateConfig('process_count', this.value)">{% for n in range(3, 9) %}<option value="{{ n }}" {{ 'selected' if n == 4 else '' }}>{{ n }} processes</option>{% endfor %}</select></label>
+                <label>Step delay<select id="config-speed" onchange="App.updateConfig('speed_ms', this.value)"><option value="600">0.6 seconds</option><option value="1200" selected>1.2 seconds</option><option value="2000">2 seconds</option><option value="3000">3 seconds</option></select></label>
+                <label>CS duration<select id="config-cs-duration" title="Simulation ticks, independent of the Lamport clock" onchange="App.updateConfig('cs_duration', this.value)">{% for n in [1, 2, 3, 5, 8, 10] %}<option value="{{ n }}" {{ 'selected' if n == 3 else '' }}>{{ n }} {{ 'tick' if n == 1 else 'ticks' }}</option>{% endfor %}</select></label>
+            </div>
+            <div class="actions">
+                <button id="btn-concurrent" onclick="App.triggerConcurrent()" title="Request from the first two idle processes">Concurrent requests</button>
+                <button id="btn-step" onclick="App.stepSimulation()">Next step <span aria-hidden="true">→</span></button>
+                <button class="primary-button" id="btn-play" onclick="App.togglePlayback()">Start auto</button>
+                <button class="quiet-button" id="btn-reset" onclick="App.resetSimulation()">Reset</button>
+            </div>
+        </section>
+        <div class="status-strip">
+            <div><span class="status-dot" id="safety-dot"></span><strong id="safety-status">Checking safety</strong><span id="stat-violations">0 violations</span></div>
+            <div><span>Inside CS</span><strong id="cs-occupancy">0 / 1</strong></div>
+            <div><span>Completed</span><strong id="stat-completed">0</strong></div>
+            <div><span>Messages sent</span><strong id="stat-total-messages">0</strong></div>
+            <div><span>Simulation</span><strong id="step-badge">Step #0</strong></div>
+        </div>
+        <div class="teaching-workspace">
+            <section class="panel topology-panel" aria-labelledby="network-title">
+                <div class="panel-heading"><div><h2 id="network-title">Message flow</h2><p>One message delivered per step. Select a process to inspect it.</p></div><span class="count-label" id="in-transit-count">0 pending</span></div>
+                <div class="network-legend" aria-label="Message types"><span class="message-tag request">REQUEST</span><span class="message-tag reply">REPLY</span><span class="message-tag release" id="release-legend">RELEASE</span></div>
+                <div id="network-topology-container"><svg id="network-svg" role="group" aria-label="Distributed processes and shared resource"></svg></div>
+                <div class="network-caption" id="network-caption">Choose Request resource on a process to begin.</div>
+            </section>
+            <section class="panel commentary-panel" aria-labelledby="commentary-title">
+                <div class="panel-heading"><h2 id="commentary-title">Live explanation</h2><span class="event-kind" id="event-kind">Ready</span></div>
+                <div class="phase-track" aria-label="Algorithm phases"><span data-phase="request">Request</span><span data-phase="reply">Replies</span><span data-phase="cs">Enter CS</span><span data-phase="release">Release</span></div>
+                <div class="live-commentary" aria-live="polite" aria-atomic="true">
+                    <h3 id="edu-title">Every process starts with its own clock and queue.</h3>
+                    <p id="edu-rule">Request the resource to follow the protocol.</p>
+                    <code class="clock-equation" id="clock-equation">Requests are ordered by (timestamp, process ID).</code>
+                    <p class="next-explanation"><strong>What next</strong><span id="edu-next">Choose a process below, or try Concurrent requests.</span></p>
+                </div>
+                <div class="entry-inspector">
+                    <div class="inspector-heading"><h3 id="entry-title">Local entry conditions</h3><label><span class="sr-only">Inspect process</span><select id="inspect-process" onchange="App.selectProcess(Number(this.value))"><option value="1">P1</option></select></label></div>
+                    <div class="condition" id="condition-head"><span class="condition-symbol">No</span><span>Own request is first in its local queue</span></div>
+                    <div class="condition" id="condition-replies"><span class="condition-symbol">No</span><span>Replies received from all other processes</span></div>
+                    <p id="entry-reason">No active request. Both conditions are needed to enter.</p>
+                </div>
+            </section>
+        </div>
+        <section class="process-section" aria-labelledby="process-title">
+            <div class="section-heading"><h2 id="process-title">Processes &amp; local queues</h2><p id="process-subtitle">Each process makes its own entry decision.</p></div>
+            <div class="process-grid" id="processes-container" aria-busy="true"><p class="empty-state">Loading processes...</p></div>
+        </section>
+        <div class="history-workspace">
+            <section class="panel observer-panel" aria-labelledby="observer-title">
+                <div class="panel-heading"><h2 id="observer-title">Observer overview</h2><span class="count-label" id="queue-length-badge">0 requests</span></div>
+                <p class="panel-description" id="observer-description">Combined view of local queues, sorted by (timestamp, PID). Each process checks its own queue and replies.</p>
+                <div class="table-scroll"><table><thead><tr><th>Order</th><th>Request</th><th>Status</th><th id="observer-detail-title">Seen in</th></tr></thead><tbody id="global-queue-body"><tr><td colspan="4" class="empty-state">No outstanding requests.</td></tr></tbody></table></div>
+            </section>
+            <section class="panel log-panel" aria-labelledby="log-title">
+                <div class="panel-heading"><h2 id="log-title">Protocol log</h2><span class="count-label">Select an event for its explanation</span></div>
+                <div class="log-filters" aria-label="Filter protocol log">{% for value, label in [('ALL', 'All'), ('REQUEST', 'Request'), ('REPLY', 'Reply'), ('RELEASE', 'Release'), ('CRITICAL_SECTION', 'CS')] %}<button class="filter-button {{ 'active' if value == 'ALL' else '' }}" data-filter="{{ value }}" aria-pressed="{{ 'true' if value == 'ALL' else 'false' }}" onclick="App.setFilter('{{ value }}')">{{ label }}</button>{% endfor %}</div>
+                <div id="event-log-list" class="event-log"><p class="empty-state">The protocol log will appear here.</p></div>
+            </section>
+        </div>
+        <details class="reference-panel">
+            <summary>Message history &amp; algorithm reference <span>Explore the details</span></summary>
+            <div class="reference-content">
+                <section><h2>Message history</h2><div class="table-scroll"><table><thead><tr><th>Route</th><th>Message</th><th>Timestamp</th><th>Status</th></tr></thead><tbody id="timeline-body"></tbody></table></div></section>
+                <section><h2>The algorithm, step by step</h2><ol class="algorithm-list" id="algorithm-stages">{% for stage in stages %}<li><strong>{{ stage.title.split(': ', 1)[-1] }}</strong><p>{{ stage.description }}</p></li>{% endfor %}</ol><div class="complexity-note"><strong id="bound-calc">3 × (4 − 1) = 9 messages per completed request</strong><p id="complexity-description">One REQUEST, one REPLY, and one RELEASE per peer. Reliable FIFO delivery and failure-free processes are assumed.</p></div></section>
+            </div>
+        </details>
+        <footer>Lamport's logical clocks <span>Logical time orders events; it does not measure seconds.</span></footer>
+    </main>
+    <script src="{{ url_for('static', filename='js/visualizer.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
